@@ -56,6 +56,9 @@ def cmd_send_msg(arg):
     node, msg = arg.split(" ", 1)
     router.send_data(node, msg)
 
+def cmd_traceroute(arg):
+    router.send_tracert(arg)
+
 
 def run_command(line):
     # Ignore empty lines

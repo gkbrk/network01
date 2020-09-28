@@ -5,6 +5,7 @@ import config
 import socket
 import time
 import random
+import sys
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -39,7 +40,7 @@ tracerList = TracerList()
 def handle(message, peer):
     peer.received += 1
 
-    if message[b"to"] == config.get("id").encode("ascii"):
+    if message[b"to"] == config.get("id") and message[b"type"] == b"data":
         handle_self(message, peer)
 
     if message[b"type"] == b"tracer":
@@ -47,6 +48,9 @@ def handle(message, peer):
 
     if message[b"type"] == b"data":
         handle_data(message, peer)
+
+    if message[b"type"] == b"dbg.tracert":
+        handle_traceroute(message, peer)
 
 
 def handle_self(message, peer):
@@ -72,10 +76,14 @@ def handle_tracer(message, peer):
     while np == peer:
         np = random.choice(peers.peers)
     message[b"ttl"] += 1
+    np.sent += 1
     sock.sendto(bencode.encode(message), np.addr)
 
 
 def handle_data(message, peer):
+    if message[b"to"] == config.get("id"):
+        return
+
     if message[b"ttl"] > config.get_int("maxttl"):
         return
 
@@ -83,11 +91,29 @@ def handle_data(message, peer):
 
     if np:
         message[b"ttl"] += 1
+        np.sent += 1
+        sock.sendto(bencode.encode(message), np.addr)
+
+
+def handle_traceroute(message, peer):
+    if message[b"to"] == config.get("id"):
+        send_data(message[b"from"], message[b"rt"])
+        return
+
+    if message[b"ttl"] > config.get_int("maxttl"):
+        return
+
+    np = tracerList.select_peer(message[b"to"])
+
+    if np:
+        message[b"ttl"] += 1
+        message[b"rt"] += b"," + config.get("id")
+        np.sent += 1
         sock.sendto(bencode.encode(message), np.addr)
 
 
 def send_data(node, data):
-    node = node.encode("ascii")
+    node = node
     np = tracerList.select_peer(node)
 
     addr = random.choice(peers.peers).addr
@@ -104,6 +130,24 @@ def send_data(node, data):
     }
     sock.sendto(bencode.encode(msg), addr)
 
+def send_tracert(node):
+    node = node
+    np = tracerList.select_peer(node)
+
+    addr = random.choice(peers.peers).addr
+
+    if np:
+        addr = np.addr
+
+    msg = {
+        "type": "dbg.tracert",
+        "from": config.get("id"),
+        "rt": config.get("id"),
+        "to": node,
+        "ttl": 0,
+    }
+    sock.sendto(bencode.encode(msg), addr)
+
 
 def seconds_ns(sec=60):
     return int((time.time() * 1000) % (sec * 1000))
@@ -111,6 +155,9 @@ def seconds_ns(sec=60):
 
 def tracer_task():
     while True:
+        while len(peers.peers) < 1:
+            time.sleep(5)
+
         peer = random.choice(peers.peers)
         peer.sent += 1
 
@@ -122,25 +169,32 @@ def tracer_task():
             "ts": seconds_ns(),
         }
         sock.sendto(bencode.encode(msg), peer.addr)
-        time.sleep(5)
+        time.sleep(config.get_int("tracer_interval"))
 
 
 def listener():
     addr = config.get("addr")
-    port = int(config.get("port"))
-    addr = (addr, port)
+    port = config.get_int("port", 0)
 
-    sock.bind(addr)
+    sock.bind((addr, port))
 
     while True:
         try:
+            # Clean temporary peers
+            peers.clean_temp()
+
             packet, peer_addr = sock.recvfrom(2048)
             peer = peers.find_by_addr(peer_addr)
 
             if not peer:
-                continue
+                if config.get_bool("temp_peer"):
+                    peer = peers.create_temp(peer_addr)
+                else:
+                    continue
 
             message = bencode.decode(packet)
             handle(message, peer)
+            peer.last_received = time.time()
         except Exception as e:
-            print(e)
+            import traceback
+            traceback.print_tb(sys.exc_info()[2])

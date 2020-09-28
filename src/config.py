@@ -4,28 +4,43 @@ import random
 
 settings = {}
 
-settings[b"addr"] = "127.0.0.1"
-settings[b"port"] = "4455"
-settings[b"name"] = f"ANON{random.randint(99999, 9999999)}"
-settings[b"maxttl"] = "10"
-
 
 def set(name, value):
     if isinstance(name, str):
         name = name.encode("ascii")
 
-    settings[name] = str(value)
+    if isinstance(value, str):
+        value = value.encode("utf-8")
+    settings[name] = value
 
 
 def get(name, value=None):
     if isinstance(name, str):
         name = name.encode("ascii")
-    return settings.get(name, value)
+    val = settings.get(name, value)
+    return val
 
 
 def get_int(name, value=None):
     v = get(name)
     if not v:
-        return None
+        return value
 
     return int(v)
+
+
+def get_bool(name, value=None):
+    v = get(name)
+
+    if v == b"true":
+        return True
+    if v == b"false":
+        return False
+
+    return value
+
+set("addr", "127.0.0.1")
+set("id", f"ANON{random.randint(99999, 9999999)}")
+set("maxttl", "10")
+set("temp_peer", "false")
+set("tracer_interval", "5")
