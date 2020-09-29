@@ -26,6 +26,9 @@ class TracerList:
         l = []
 
         for peer, n, ttl, latency in self.l:
+            if not peer in peers.peers:
+                continue
+
             if node == n:
                 l.append((peer, ttl, latency))
 
@@ -193,6 +196,7 @@ def listener():
                     continue
 
             message = bencode.decode(packet)
+            #print(message, peer_addr, peer.alias)
             handle(message, peer)
             peer.last_received = time.time()
         except Exception as e:
