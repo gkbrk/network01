@@ -1,5 +1,9 @@
 import time
 import random
+import config
+import NetworkKey
+import router
+import bencode
 
 peers = []
 
@@ -12,6 +16,13 @@ class Peer:
         self.received = 0
         self.last_received = time.time()
         self.is_temp = False
+
+    def send_packet(self, message):
+        key = config.get("network-key")
+        if key:
+            NetworkKey.sign(message)
+
+        router.sock.sendto(bencode.encode(message), self.addr)
 
 
 def find_by_addr(addr):

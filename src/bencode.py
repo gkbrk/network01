@@ -15,20 +15,31 @@ import functools
 def encode(obj):
     raise Exception(f"Unknown type: {type(obj)}")
 
+@functools.singledispatch
+def utf(obj):
+    raise Exception(f"Unknown type: {type(obj)}")
+
+@utf.register(str)
+def _(val):
+    return val.encode("utf-8")
+
+@utf.register(bytes)
+def _(val):
+    return val
 
 @encode.register(int)
 def _(val):
-    return b"i" + str(val).encode("ascii") + b"e"
+    return b"i" + utf(str(val)) + b"e"
 
 
 @encode.register(str)
 def _(val):
-    return encode(val.encode("utf-8"))
+    return encode(utf(val))
 
 
 @encode.register(bytes)
 def _(val):
-    return str(len(val)).encode("ascii") + b":" + val
+    return utf(str(len(val))) + b":" + val
 
 
 @encode.register(list)
@@ -44,6 +55,8 @@ def _(val):
 @encode.register(dict)
 def _(val):
     r = b"d"
+
+    val = {utf(k): val[k] for k in val.keys()}
 
     for n in sorted(val.keys()):
         r += encode(n)

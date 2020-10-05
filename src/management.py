@@ -50,7 +50,10 @@ def cmd_read(arg):
 def cmd_start(arg):
     threading.Thread(target=router.listener, daemon=True).start()
     threading.Thread(target=router.tracer_task, daemon=True).start()
+    threading.Thread(target=router.audio_task, daemon=True).start()
 
+def cmd_debug_update(arg):
+    router.send_update(arg)
 
 def cmd_send_msg(arg):
     node, msg = arg.split(" ", 1)
@@ -59,6 +62,28 @@ def cmd_send_msg(arg):
 def cmd_traceroute(arg):
     router.send_tracert(arg)
 
+def cmd_known_nodes(arg):
+    tracers = [tracer[1] for tracer in router.tracerList.l]
+    tracers = list(set(tracers))
+    tracers.sort()
+
+    for tracer in tracers:
+        print(tracer)
+
+def cmd_update(arg):
+    import selfUpdate
+    selfUpdate.update()
+
+def cmd_audio(arg):
+    import os
+    if arg == "off":
+        if router.dsp:
+            os.close(router.dsp)
+        router.dsp = None
+        router.audioTarget = None
+    else:
+        router.dsp = os.open("/dev/dsp", os.O_RDWR)
+        router.audioTarget = arg
 
 def run_command(line):
     # Ignore empty lines
@@ -78,7 +103,10 @@ def run_command(line):
 
 
 def management():
+    import buildtime
+
     print("Network Management Console")
+    print(f"Built on {buildtime.date}")
     print()
 
     readline.parse_and_bind("")

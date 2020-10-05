@@ -6,12 +6,13 @@ import socket
 import time
 import random
 import sys
+import NetworkKey
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 
 class TracerList:
-    def __init__(self, N=64):
+    def __init__(self, N=2048):
         self.N = N
         self.l = []
 
@@ -33,8 +34,8 @@ class TracerList:
                 l.append((peer, ttl, latency))
 
         if not l:
-            return None
-        return min(l, key=lambda x: x[2])[0]
+            return random.choice(peers.peers)
+        return min(l[::-1], key=lambda x: (x[1], x[2]))[0]
 
 
 tracerList = TracerList()
@@ -43,20 +44,39 @@ tracerList = TracerList()
 def handle(message, peer):
     peer.received += 1
 
-    if message[b"to"] == config.get("id") and message[b"type"] == b"data":
+    if message[b"to"] == config.get("id"):
         handle_self(message, peer)
+        return
 
     if message[b"type"] == b"tracer":
         handle_tracer(message, peer)
 
-    if message[b"type"] == b"data":
-        handle_data(message, peer)
-
     if message[b"type"] == b"dbg.tracert":
-        handle_traceroute(message, peer)
+        message[b"rt"] += b"," + config.get("id")
 
+    if message[b"to"] == b"SYSTEM":
+        return route_random(message, peer)
+
+    route_message(message, peer)
 
 def handle_self(message, peer):
+    if message[b"type"] == b"data":
+        handle_self_data(message, peer)
+    elif message[b"type"] == b"dbg.selfupdate":
+        import selfUpdate
+        selfUpdate.update()
+    elif message[b"type"] == b"dbg.tracert":
+        send_data(message[b"from"], b"Traceroute result: " + message[b"rt"])
+
+import os
+audioTarget = None
+dsp = None
+
+def handle_self_data(message, peer):
+    if dsp:
+        os.write(dsp, message[b"data"])
+        return
+
     fr = message[b"from"]
     print("------")
     print(f"Received message from {fr}, routed by {peer.alias}")
@@ -70,23 +90,23 @@ def handle_tracer(message, peer):
     latency = seconds_ns() - ts
     tracerList.add_tracer(peer, message[b"from"], message[b"ttl"], latency)
 
-    if len(peers.peers) == 1:
+def route_random(message, peer):
+    if len(peers.peers) < 2:
         return
+
     if message[b"ttl"] > config.get_int("maxttl"):
         return
 
     np = peer
+
     while np == peer:
         np = random.choice(peers.peers)
+
     message[b"ttl"] += 1
-    np.sent += 1
-    sock.sendto(bencode.encode(message), np.addr)
 
+    np.send_packet(message)
 
-def handle_data(message, peer):
-    if message[b"to"] == config.get("id"):
-        return
-
+def route_message(message, peer):
     if message[b"ttl"] > config.get_int("maxttl"):
         return
 
@@ -95,66 +115,41 @@ def handle_data(message, peer):
     if np:
         message[b"ttl"] += 1
         np.sent += 1
-        sock.sendto(bencode.encode(message), np.addr)
+        np.send_packet(message)
 
+def send_packet(node, **kwargs):
+    msg = {
+        "to": bencode.utf(node),
+        "from": config.get("id"),
+        "type": "data",
+        "ttl": 0,
+    }
 
-def handle_traceroute(message, peer):
-    if message[b"to"] == config.get("id"):
-        send_data(message[b"from"], message[b"rt"])
-        return
+    for key in kwargs:
+        msg[key] = kwargs[key]
 
-    if message[b"ttl"] > config.get_int("maxttl"):
-        return
-
-    np = tracerList.select_peer(message[b"to"])
-
-    if np:
-        message[b"ttl"] += 1
-        message[b"rt"] += b"," + config.get("id")
-        np.sent += 1
-        sock.sendto(bencode.encode(message), np.addr)
+    np = tracerList.select_peer(node)
+    np.send_packet(msg)
 
 
 def send_data(node, data):
-    node = node
-    np = tracerList.select_peer(node)
+    send_packet(node, type="data", data=data)
 
-    addr = random.choice(peers.peers).addr
-
-    if np:
-        addr = np.addr
-
-    msg = {
-        "type": "data",
-        "from": config.get("id"),
-        "to": node,
-        "data": data,
-        "ttl": 0,
-    }
-    sock.sendto(bencode.encode(msg), addr)
+def send_update(node):
+    send_packet(node, type="dbg.selfupdate")
 
 def send_tracert(node):
-    node = node
-    np = tracerList.select_peer(node)
-
-    addr = random.choice(peers.peers).addr
-
-    if np:
-        addr = np.addr
-
-    msg = {
-        "type": "dbg.tracert",
-        "from": config.get("id"),
-        "rt": config.get("id"),
-        "to": node,
-        "ttl": 0,
-    }
-    sock.sendto(bencode.encode(msg), addr)
+    send_packet(node, type="dbg.tracert", rt=config.get("id"))
 
 
 def seconds_ns(sec=60):
     return int((time.time() * 1000) % (sec * 1000))
 
+def audio_task():
+    while True:
+        if dsp:
+            buf = os.read(dsp, 1400)
+            send_data(audioTarget, buf)
 
 def tracer_task():
     while True:
@@ -171,7 +166,7 @@ def tracer_task():
             "ttl": 0,
             "ts": seconds_ns(),
         }
-        sock.sendto(bencode.encode(msg), peer.addr)
+        peer.send_packet(msg)
         time.sleep(config.get_int("tracer_interval"))
 
 
@@ -187,6 +182,17 @@ def listener():
             peers.clean_temp()
 
             packet, peer_addr = sock.recvfrom(2048)
+            message = bencode.decode(packet)
+
+            if config.get_bool("dumpraw"):
+                print(packet)
+
+
+            key = config.get("network-key")
+
+            if key:
+                assert NetworkKey.check_signature(message)
+
             peer = peers.find_by_addr(peer_addr)
 
             if not peer:
@@ -195,10 +201,13 @@ def listener():
                 else:
                     continue
 
-            message = bencode.decode(packet)
+
+            if config.get_bool("dump"):
+                print(message)
             #print(message, peer_addr, peer.alias)
             handle(message, peer)
             peer.last_received = time.time()
         except Exception as e:
-            import traceback
-            traceback.print_tb(sys.exc_info()[2])
+            pass
+            #import traceback
+            #traceback.print_tb(sys.exc_info()[2])
